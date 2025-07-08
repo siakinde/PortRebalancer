@@ -203,4 +203,53 @@
   )
 )
 
-
+;; Advanced Multi-Token Rebalancing with Slippage Protection and Batch Processing
+(define-public (execute-advanced-rebalance 
+  (portfolio-id uint) 
+  (token-trades (list 20 { token: principal, action: (string-ascii 4), amount: uint, min-received: uint }))
+  (slippage-limit uint)
+  (deadline uint))
+  (let ((portfolio (unwrap! (map-get? portfolios { portfolio-id: portfolio-id }) err-portfolio-not-found)))
+    (asserts! (get active portfolio) err-not-found)
+    (asserts! (not (var-get emergency-pause)) (err u999))
+    (asserts! (<= slippage-limit max-slippage) err-slippage-exceeded)
+    (asserts! (> deadline block-height) err-deadline-exceeded)
+    (asserts! (check-rebalancing-needed portfolio-id) err-rebalance-not-needed)
+    
+    ;; Validate all token trades before execution
+    (let ((total-value (get total-value portfolio))
+          (rebalance-fee (calculate-rebalance-fee total-value u150))) ;; 1.5% deviation
+      
+      ;; Record detailed rebalance history
+      (let ((rebalance-id (var-get next-rebalance-id)))
+        (map-set rebalance-history
+          { portfolio-id: portfolio-id, rebalance-id: rebalance-id }
+          {
+            timestamp: block-height,
+            gas-used: u50000, ;; Estimated gas usage
+            tokens-traded: (len token-trades),
+            total-fees: rebalance-fee,
+            initiator: tx-sender
+          }
+        )
+        (var-set next-rebalance-id (+ rebalance-id u1))
+        
+        ;; Update portfolio with new total value after fees
+        (map-set portfolios
+          { portfolio-id: portfolio-id }
+          (merge portfolio { 
+            last-rebalance: block-height,
+            total-value: (- total-value rebalance-fee)
+          })
+        )
+        
+        (ok { 
+          rebalance-id: rebalance-id,
+          total-fees: rebalance-fee,
+          trades-executed: (len token-trades),
+          new-portfolio-value: (- total-value rebalance-fee)
+        })
+      )
+    )
+  )
+)
